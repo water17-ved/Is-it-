@@ -17,8 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: "22"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -32,6 +31,22 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Apply native Android widgets
+        run: |
+          if [ -f native-android/apply-widgets.py ]; then
+            python3 native-android/apply-widgets.py
+          fi
+
+      - name: Configure Firebase
+        run: |
+          if [ -f firebase/google-services.json ]; then
+            mkdir -p android/app
+            cp firebase/google-services.json android/app/google-services.json
+            echo "Firebase google-services.json found."
+          else
+            echo "No google-services.json yet. Continuing without native Firebase config."
+          fi
+
       - name: Sync Capacitor
         run: npx cap sync android
 
@@ -40,20 +55,27 @@ jobs:
         run: |
           chmod +x gradlew
 
+          echo "Generating Android signing report..."
           ./gradlew signingReport --no-daemon 2>&1 | tee signing-report.txt
 
           SHA1=$(grep -m 1 "SHA1:" signing-report.txt | sed 's/.*SHA1:[[:space:]]*//')
 
+          if [ -z "$SHA1" ]; then
+            echo "ERROR: SHA-1 could not be extracted."
+            exit 1
+          fi
+
+          echo ""
           echo "=========================================="
           echo "FIREBASE SHA-1"
           echo "$SHA1"
           echo "=========================================="
 
           mkdir -p ../firebase
-          echo "$SHA1" > ../firebase/firebase-debug-sha1.txt
+          printf '%s\n' "$SHA1" > ../firebase/firebase-debug-sha1.txt
 
           {
-            echo "## 🔥 Firebase SHA-1"
+            echo "## Firebase SHA-1"
             echo ""
             echo '```text'
             echo "$SHA1"
@@ -76,12 +98,7 @@ jobs:
 
       - name: Generate APK SHA-256
         run: |
-          sha256sum android/app/build/outputs/apk/debug/app-debug.apk > app-debug.apk.sha256
+          sha256sum android/app/build/outputs/apk/debug/app-debug.apk \
+            > app-debug.apk.sha256
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: JEE-Tracker-debug-APK
-          path: |
-            android/app/build/outputs/apk/debug/app-debug.apk
-            app-debug.apk.sha256
