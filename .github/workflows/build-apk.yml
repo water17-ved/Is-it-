@@ -6,99 +6,293 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  JAVA_VERSION: '21'
+  CAPACITOR_VERSION: '7.4.3'
+  ANDROID_APP_ID: 'com.vedplayer.jeetracker'
+
 jobs:
   build:
+    name: Build debug APK + Firebase SHA-1
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare Capacitor project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f www/index.html ]; then
+            if [ -f index.html ]; then
+              echo "www/ not found; staging web files into www/"
+              mkdir -p www
+
+              for f in \
+                index.html \
+                schedule.html \
+                test-analysis.html \
+                manifest.json \
+                sw.js \
+                ai-file-reader.js \
+                jee-ai-android.js \
+                jee-android-hardening.js \
+                jee-android-native.js \
+                jee-capacitor-bridge.js \
+                jee-native-files.js \
+                jee-native-storage.js \
+                jee-network-status.js \
+                jee-widgets.js \
+                icon-192.png \
+                icon-512.png
+              do
+                if [ -f "$f" ]; then
+                  cp "$f" "www/$f"
+                fi
+              done
+            else
+              echo "ERROR: index.html was not found."
+              exit 1
+            fi
+          fi
+
+          if [ ! -f package.json ]; then
+            echo "package.json not found; creating Capacitor build manifest."
+
+            cat > package.json <<'JSON'
+          {
+            "name": "jee-tracker-android",
+            "version": "1.0.0",
+            "private": true,
+            "description": "JEE Tracker Android wrapper using Capacitor.",
+            "scripts": {
+              "android:add": "cap add android",
+              "android:sync": "cap sync android",
+              "android:build:debug": "cd android && ./gradlew assembleDebug"
+            },
+            "dependencies": {
+              "@capacitor/core": "^7.4.3",
+              "@capacitor/app": "^7.1.0",
+              "@capacitor/filesystem": "^7.1.0",
+              "@capacitor/local-notifications": "^7.0.7",
+              "@capacitor/share": "^7.0.0",
+              "@capawesome/capacitor-file-picker": "^7.2.0",
+              "@capacitor-firebase/authentication": "^7.4.0"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^7.4.3",
+              "@capacitor/android": "^7.4.3",
+              "typescript": "^5.8.3"
+            }
+          }
+          JSON
+          fi
+
+          if [ ! -f capacitor.config.ts ]; then
+            echo "capacitor.config.ts not found; creating it."
+
+            cat > capacitor.config.ts <<'TS'
+          import type { CapacitorConfig } from '@capacitor/cli';
+
+          const enableNativeGoogle =
+            process.env.JEE_NATIVE_GOOGLE_AUTH === '1';
+
+          const config: CapacitorConfig = {
+            appId: 'com.vedplayer.jeetracker',
+            appName: 'JEE Tracker',
+            webDir: 'www',
+            bundledWebRuntime: false,
+
+            plugins: {
+              FirebaseAuthentication: {
+                skipNativeAuth: false,
+                providers: enableNativeGoogle
+                  ? ['google.com']
+                  : []
+              }
+            },
+
+            server: {
+              androidScheme: 'https'
+            }
+          };
+
+          export default config;
+          TS
+          fi
+
+      - name: Check build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f package.json
+          test -f capacitor.config.ts
+          test -f www/index.html
+
+          echo "Build inputs verified."
+          echo "Node: $(node --version)"
+          echo "npm:  $(npm --version)"
 
       - name: Install npm dependencies
-        run: npm install
+        run: npm install --no-audit --no-fund
 
-      - name: Add Capacitor Android
+      - name: Configure optional native Google Sign-In
+        shell: bash
+        run: |
+          if [ -f firebase/google-services.json ]; then
+            echo "JEE_NATIVE_GOOGLE_AUTH=1" >> "$GITHUB_ENV"
+            echo "Firebase configuration found."
+          else
+            echo "JEE_NATIVE_GOOGLE_AUTH=0" >> "$GITHUB_ENV"
+            echo "Firebase configuration not supplied."
+          fi
+
+      - name: Add Capacitor Android platform
         run: npx cap add android
 
-      - name: Apply native widgets
+      - name: Apply JEE Tracker native widgets
+        shell: bash
         run: |
           if [ -f native-android/apply-widgets.py ]; then
             python3 native-android/apply-widgets.py
+            echo "Native widgets applied."
+          else
+            echo "Widget overlay not found; continuing."
           fi
 
-      - name: Configure Firebase
+      - name: Configure Firebase Android project
+        shell: bash
         run: |
-          if [ -f firebase/google-services.json ]; then
-            mkdir -p android/app
-            cp firebase/google-services.json android/app/google-services.json
-            echo "Firebase configuration found."
-          else
-            echo "Firebase configuration not found. Continuing."
+          set -euo pipefail
+
+          if [ ! -f firebase/google-services.json ]; then
+            echo "Firebase configuration not supplied."
+            exit 0
           fi
+
+          mkdir -p android/app
+
+          cp firebase/google-services.json \
+            android/app/google-services.json
+
+          if [ -f android/variables.gradle ]; then
+            if ! grep -q "rgcfaIncludeGoogle" android/variables.gradle; then
+              sed -i "0,/^ext {/s//ext {\n    rgcfaIncludeGoogle = true\n    androidxCredentialsVersion = '1.3.0'/" \
+                android/variables.gradle
+            fi
+          fi
+
+          if ! grep -q "com.google.gms.google-services" android/build.gradle; then
+            if grep -q "^plugins {" android/build.gradle; then
+              sed -i "/^plugins {/a\\    id 'com.google.gms.google-services' version '4.5.0' apply false" \
+                android/build.gradle
+            fi
+          fi
+
+          if ! grep -q "com.google.gms.google-services" android/app/build.gradle; then
+            printf '%s\n' \
+              "apply plugin: 'com.google.gms.google-services'" \
+              >> android/app/build.gradle
+          fi
+
+          echo "Firebase Android configuration applied."
 
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Generate Firebase SHA-1
-        working-directory: android
+      - name: Generate Firebase debug SHA-1
+        shell: bash
         run: |
-          chmod +x gradlew
-          ./gradlew signingReport --no-daemon 2>&1 | tee signing-report.txt
+          set -euo pipefail
 
-          SHA1=$(grep -m 1 "SHA1:" signing-report.txt | sed 's/.*SHA1:[[:space:]]*//')
+          cd android
+
+          ./gradlew signingReport \
+            --no-daemon \
+            > ../signing-report.txt 2>&1
+
+          cd ..
+
+          echo "===== SHA-1 VALUES ====="
+
+          grep -E "SHA1:|SHA-1:" \
+            signing-report.txt || true
+
+          SHA1="$(
+            grep -E "SHA1:|SHA-1:" signing-report.txt \
+            | head -n 1 \
+            | sed -E 's/.*(SHA1:|SHA-1:) *//'
+          )"
 
           if [ -z "$SHA1" ]; then
-            echo "ERROR: SHA-1 was not found."
+            echo "ERROR: Debug SHA-1 was not generated."
+            echo
+            echo "Full signing report:"
             cat signing-report.txt
             exit 1
           fi
 
-          echo ""
-          echo "========================================"
-          echo "FIREBASE SHA-1"
-          echo "$SHA1"
-          echo "========================================"
+          echo "$SHA1" > firebase-debug-sha1.txt
 
-          mkdir -p ../firebase
-          echo "$SHA1" > ../firebase/firebase-debug-sha1.txt
+          {
+            echo "## Firebase Debug SHA-1"
+            echo
+            echo "\`$SHA1\`"
+            echo
+            echo "Add this SHA-1 to Firebase Project Settings."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "## Firebase SHA-1" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "$SHA1" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload Firebase SHA-1
-        uses: actions/upload-artifact@v4
-        with:
-          name: firebase-debug-sha1
-          path: firebase/firebase-debug-sha1.txt
-
-      - name: Build APK
+      - name: Build debug APK
         working-directory: android
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Generate APK SHA-256
+        shell: bash
         run: |
-          sha256sum android/app/build/outputs/apk/debug/app-debug.apk > app-debug.apk.sha256
+          sha256sum \
+            android/app/build/outputs/apk/debug/app-debug.apk \
+            > app-debug.apk.sha256
 
-      - name: Upload APK
+      - name: Upload Firebase SHA-1 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JEE-Tracker-debug-APK
+          name: jee-tracker-firebase-debug-sha1
+          path: |
+            firebase-debug-sha1.txt
+            signing-report.txt
+          if-no-files-found: error
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jee-tracker-debug-apk
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
             app-debug.apk.sha256
+          if-no-files-found: error
