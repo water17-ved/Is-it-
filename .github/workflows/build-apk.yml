@@ -1,4 +1,4 @@
-name: Build JEE Tracker Android APK + Firebase SHA-1
+name: Build JEE Tracker Android APK
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ on:
       - main
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -25,13 +25,13 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install dependencies
+      - name: Install npm dependencies
         run: npm install
 
-      - name: Add Android platform
+      - name: Add Capacitor Android
         run: npx cap add android
 
-      - name: Apply native Android widgets
+      - name: Apply native widgets
         run: |
           if [ -f native-android/apply-widgets.py ]; then
             python3 native-android/apply-widgets.py
@@ -42,9 +42,9 @@ jobs:
           if [ -f firebase/google-services.json ]; then
             mkdir -p android/app
             cp firebase/google-services.json android/app/google-services.json
-            echo "Firebase google-services.json found."
+            echo "Firebase configuration found."
           else
-            echo "No google-services.json yet. Continuing without native Firebase config."
+            echo "Firebase configuration not found. Continuing."
           fi
 
       - name: Sync Capacitor
@@ -54,35 +54,30 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-
-          echo "Generating Android signing report..."
           ./gradlew signingReport --no-daemon 2>&1 | tee signing-report.txt
 
           SHA1=$(grep -m 1 "SHA1:" signing-report.txt | sed 's/.*SHA1:[[:space:]]*//')
 
           if [ -z "$SHA1" ]; then
-            echo "ERROR: SHA-1 could not be extracted."
+            echo "ERROR: SHA-1 was not found."
+            cat signing-report.txt
             exit 1
           fi
 
           echo ""
-          echo "=========================================="
+          echo "========================================"
           echo "FIREBASE SHA-1"
           echo "$SHA1"
-          echo "=========================================="
+          echo "========================================"
 
           mkdir -p ../firebase
-          printf '%s\n' "$SHA1" > ../firebase/firebase-debug-sha1.txt
+          echo "$SHA1" > ../firebase/firebase-debug-sha1.txt
 
-          {
-            echo "## Firebase SHA-1"
-            echo ""
-            echo '```text'
-            echo "$SHA1"
-            echo '```'
-            echo ""
-            echo "Add this SHA-1 to Firebase → Project settings → Your apps → JEE Tracker → SHA certificate fingerprints."
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "## Firebase SHA-1" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$SHA1" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Firebase SHA-1
         uses: actions/upload-artifact@v4
@@ -90,7 +85,7 @@ jobs:
           name: firebase-debug-sha1
           path: firebase/firebase-debug-sha1.txt
 
-      - name: Build debug APK
+      - name: Build APK
         working-directory: android
         run: |
           chmod +x gradlew
@@ -98,7 +93,12 @@ jobs:
 
       - name: Generate APK SHA-256
         run: |
-          sha256sum android/app/build/outputs/apk/debug/app-debug.apk \
-            > app-debug.apk.sha256
+          sha256sum android/app/build/outputs/apk/debug/app-debug.apk > app-debug.apk.sha256
 
       - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JEE-Tracker-debug-APK
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            app-debug.apk.sha256
