@@ -1,338 +1,139 @@
-name: Build JEE Tracker Android APK
+name: JEE Tracker Android
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
-env:
-  NODE_VERSION: "22"
-  JAVA_VERSION: "21"
-
 jobs:
   build:
-    name: Build debug APK + Firebase SHA-1
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Show repository
+      - name: Extract JEE Tracker ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Repository:"
-          pwd
+          ZIP=$(find . -maxdepth 1 -type f \
+            -iname 'JEE-Tracker-Android-*.zip' \
+            | sort | tail -n 1)
 
-          echo "Files:"
-          find . -maxdepth 2 -type f \
-            ! -path "./.git/*" \
-            | sort | head -300
-
-      - name: Recover project from ZIP if necessary
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -f index.html ] && [ ! -f www/index.html ]; then
-            ZIP=""
-
-            for candidate in \
-              "JEE-Tracker-Android-Stage14-Complete-Upload.zip" \
-              "JEE-Tracker-Android-Stage13-Firebase-SHA-FINAL.zip" \
-              "JEE-Tracker-Android-GitHub-Ready.zip"
-            do
-              if [ -f "$candidate" ]; then
-                ZIP="$candidate"
-                break
-              fi
-            done
-
-            if [ -z "$ZIP" ]; then
-              ZIP="$(find . -maxdepth 1 -type f \
-                -iname 'JEE-Tracker-Android-*.zip' \
-                | sort | tail -n 1 || true)"
-            fi
-
-            if [ -n "$ZIP" ]; then
-              echo "Found project ZIP: $ZIP"
-              rm -rf .project-extract
-              mkdir -p .project-extract
-              unzip -q "$ZIP" -d .project-extract
-
-              SOURCE="$(find .project-extract \
-                -type f \
-                -name index.html \
-                -print -quit)"
-
-              if [ -z "$SOURCE" ]; then
-                echo "ERROR: No index.html found inside ZIP."
-                exit 1
-              fi
-
-              ROOT="$(dirname "$SOURCE")"
-
-              echo "Project root inside ZIP:"
-              echo "$ROOT"
-
-              cp -R "$ROOT"/. .
-            fi
-          fi
-
-      - name: Prepare web directory
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p www
-
-          if [ -f index.html ]; then
-            cp index.html www/
-          fi
-
-          for file in \
-            schedule.html \
-            test-analysis.html \
-            manifest.json \
-            sw.js \
-            ai-file-reader.js \
-            jee-ai-android.js \
-            jee-android-hardening.js \
-            jee-android-native.js \
-            jee-capacitor-bridge.js \
-            jee-native-files.js \
-            jee-native-storage.js \
-            jee-network-status.js \
-            jee-widgets.js \
-            icon-192.png \
-            icon-512.png
-          do
-            if [ -f "$file" ]; then
-              cp "$file" www/
-            fi
-          done
-
-          test -f www/index.html
-
-          echo "Web files ready:"
-          find www -maxdepth 1 -type f | sort
-
-      - name: Prepare package.json
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -f package.json ]; then
-            cat > package.json <<'JSON'
-          {
-            "name": "jee-tracker-android",
-            "version": "1.0.0",
-            "private": true,
-            "scripts": {
-              "android:add": "cap add android",
-              "android:sync": "cap sync android"
-            },
-            "dependencies": {
-              "@capacitor/core": "^7.4.3",
-              "@capacitor/app": "^7.1.0",
-              "@capacitor/filesystem": "^7.1.0",
-              "@capacitor/local-notifications": "^7.0.7",
-              "@capacitor/share": "^7.0.0",
-              "@capawesome/capacitor-file-picker": "^7.2.0",
-              "@capacitor-firebase/authentication": "^7.4.0"
-            },
-            "devDependencies": {
-              "@capacitor/cli": "^7.4.3",
-              "@capacitor/android": "^7.4.3",
-              "typescript": "^5.8.3"
-            }
-          }
-          JSON
-          fi
-
-          test -f package.json
-
-      - name: Prepare Capacitor config
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -f capacitor.config.ts ]; then
-            cat > capacitor.config.ts <<'TS'
-          import type { CapacitorConfig } from "@capacitor/cli";
-
-          const config: CapacitorConfig = {
-            appId: "com.vedplayer.jeetracker",
-            appName: "JEE Tracker",
-            webDir: "www",
-            bundledWebRuntime: false,
-            server: {
-              androidScheme: "https"
-            }
-          };
-
-          export default config;
-          TS
-          fi
-
-          test -f capacitor.config.ts
-
-      - name: Verify required files
-        shell: bash
-        run: |
-          set -e
-
-          echo "Checking required project files..."
-
-          test -f package.json
-          test -f capacitor.config.ts
-          test -f www/index.html
-          test -f www/schedule.html
-          test -f www/test-analysis.html
-
-          echo "All required files found."
-
-      - name: Install npm dependencies
-        run: |
-          npm install --no-audit --no-fund
-
-      - name: Detect Firebase configuration
-        shell: bash
-        run: |
-          if [ -f firebase/google-services.json ]; then
-            echo "Firebase configuration found."
-            echo "JEE_NATIVE_GOOGLE_AUTH=1" >> "$GITHUB_ENV"
-          else
-            echo "Firebase configuration not found."
-            echo "JEE_NATIVE_GOOGLE_AUTH=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Add Android platform
-        run: |
-          npx cap add android
-
-      - name: Apply JEE Tracker native widgets
-        shell: bash
-        run: |
-          if [ -f native-android/apply-widgets.py ]; then
-            python3 native-android/apply-widgets.py
-            echo "Widgets applied."
-          else
-            echo "Widget overlay not found."
-          fi
-
-      - name: Configure Firebase
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -f firebase/google-services.json ]; then
-            echo "Skipping Firebase configuration."
-            exit 0
-          fi
-
-          mkdir -p android/app
-
-          cp firebase/google-services.json \
-            android/app/google-services.json
-
-          echo "google-services.json copied."
-
-      - name: Sync Capacitor
-        run: |
-          npx cap sync android
-
-      - name: Generate Firebase SHA-1
-        shell: bash
-        run: |
-          set -e
-
-          cd android
-
-          ./gradlew signingReport \
-            --no-daemon \
-            > ../signing-report.txt 2>&1
-
-          cd ..
-
-          echo "======================================"
-          echo "Firebase SHA-1"
-          echo "======================================"
-
-          grep -E "SHA1:|SHA-1:" signing-report.txt || true
-
-          SHA1="$(
-            grep -E "SHA1:|SHA-1:" signing-report.txt \
-            | head -n 1 \
-            | sed -E 's/.*(SHA1:|SHA-1:) *//'
-          )"
-
-          if [ -z "$SHA1" ]; then
-            echo "ERROR: SHA-1 was not generated."
-            cat signing-report.txt
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: JEE Tracker ZIP not found."
             exit 1
           fi
 
-          echo "$SHA1" > firebase-debug-sha1.txt
+          echo "Using: $ZIP"
 
-          echo "SHA-1:"
-          echo "$SHA1"
+          mkdir -p .jee-extracted
+          unzip -q "$ZIP" -d .jee-extracted
 
-          {
-            echo "## Firebase Debug SHA-1"
-            echo
-            echo "\`$SHA1\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          ROOT=$(find .jee-extracted -type f \
+            -name index.html -print -quit | xargs -r dirname)
 
-      - name: Build debug APK
-        working-directory: android
+          if [ -z "$ROOT" ]; then
+            echo "ERROR: index.html not found inside ZIP."
+            exit 1
+          fi
+
+          cp -R "$ROOT"/. .
+
+          echo "JEE Tracker extracted successfully."
+
+      - name: Verify project
         run: |
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace
+          test -f index.html
+          test -f schedule.html
+          test -f test-analysis.html
+          test -f package.json
 
-      - name: Generate APK SHA-256
-        shell: bash
+          echo "Project verified."
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Prepare web directory
+        run: |
+          mkdir -p www
+          cp index.html schedule.html test-analysis.html www/
+
+          find . -maxdepth 1 -type f \
+            \( -name '*.js' -o -name '*.json' -o -name '*.png' \) \
+            -exec cp {} www/ \; || true
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Add Android
+        run: npx cap add android
+
+      - name: Apply widgets
+        run: |
+          if [ -f native-android/apply-widgets.py ]; then
+            python3 native-android/apply-widgets.py
+          fi
+
+      - name: Firebase
+        run: |
+          if [ -f firebase/google-services.json ]; then
+            mkdir -p android/app
+            cp firebase/google-services.json android/app/
+          fi
+
+      - name: Sync
+        run: npx cap sync android
+
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Get Firebase SHA-1
+        run: |
+          keytool -list -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -alias androiddebugkey \
+            -storepass android \
+            -keypass android \
+            | grep "SHA1:" \
+            > firebase-debug-sha1.txt
+
+          cat firebase-debug-sha1.txt
+
+      - name: APK SHA-256
         run: |
           sha256sum \
             android/app/build/outputs/apk/debug/app-debug.apk \
             > app-debug.apk.sha256
 
-      - name: Upload Firebase SHA-1
-        uses: actions/upload-artifact@v4
-        with:
-          name: jee-tracker-firebase-debug-sha1
-          path: |
-            firebase-debug-sha1.txt
-            signing-report.txt
-          if-no-files-found: error
-
-      - name: Upload debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jee-tracker-debug-apk
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
             app-debug.apk.sha256
-          if-no-files-found: error
+
+      - name: Upload Firebase SHA-1
+        uses: actions/upload-artifact@v4
+        with:
+          name: firebase-debug-sha1
+          path: firebase-debug-sha1.txt
