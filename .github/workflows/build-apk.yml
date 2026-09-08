@@ -10,9 +10,8 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '22'
-  JAVA_VERSION: '21'
-  CAPACITOR_VERSION: '7.4.3'
+  NODE_VERSION: "22"
+  JAVA_VERSION: "21"
 
 jobs:
   build:
@@ -21,89 +20,85 @@ jobs:
     timeout-minutes: 40
 
     steps:
-
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
-
       - name: Checkout repository
-        uses: actions/checkout@v7
-
-
-      # ============================================================
-      # 2. NODE
-      # ============================================================
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-
-      # ============================================================
-      # 3. JAVA
-      #
-      # IMPORTANT:
-      # No "cache: gradle" here.
-      #
-      # Android/Gradle does not exist yet at this point.
-      # ============================================================
-
       - name: Set up Java
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache-jdk: true
-
-
-      # ============================================================
-      # 4. ANDROID SDK
-      # ============================================================
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-
-      # ============================================================
-      # 5. VERIFY SOURCE
-      # ============================================================
-
-      - name: Inspect repository
+      - name: Show repository
         shell: bash
         run: |
           set -e
 
-          echo "======================================"
-          echo "Repository contents"
-          echo "======================================"
-
+          echo "Repository:"
           pwd
 
-          echo
-          echo "Top-level files:"
-          find . -maxdepth 2 -type f | sort | head -200
+          echo "Files:"
+          find . -maxdepth 2 -type f \
+            ! -path "./.git/*" \
+            | sort | head -300
 
-          echo
-          echo "======================================"
-          echo "Checking JEE Tracker source"
-          echo "======================================"
+      - name: Recover project from ZIP if necessary
+        shell: bash
+        run: |
+          set -e
 
-          if [ -f index.html ]; then
-            echo "✓ index.html found"
-          elif [ -f www/index.html ]; then
-            echo "✓ www/index.html found"
-          else
-            echo "ERROR: index.html was not found."
-            echo
-            echo "The JEE Tracker web files must be pushed to the repository."
-            exit 1
+          if [ ! -f index.html ] && [ ! -f www/index.html ]; then
+            ZIP=""
+
+            for candidate in \
+              "JEE-Tracker-Android-Stage14-Complete-Upload.zip" \
+              "JEE-Tracker-Android-Stage13-Firebase-SHA-FINAL.zip" \
+              "JEE-Tracker-Android-GitHub-Ready.zip"
+            do
+              if [ -f "$candidate" ]; then
+                ZIP="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$ZIP" ]; then
+              ZIP="$(find . -maxdepth 1 -type f \
+                -iname 'JEE-Tracker-Android-*.zip' \
+                | sort | tail -n 1 || true)"
+            fi
+
+            if [ -n "$ZIP" ]; then
+              echo "Found project ZIP: $ZIP"
+              rm -rf .project-extract
+              mkdir -p .project-extract
+              unzip -q "$ZIP" -d .project-extract
+
+              SOURCE="$(find .project-extract \
+                -type f \
+                -name index.html \
+                -print -quit)"
+
+              if [ -z "$SOURCE" ]; then
+                echo "ERROR: No index.html found inside ZIP."
+                exit 1
+              fi
+
+              ROOT="$(dirname "$SOURCE")"
+
+              echo "Project root inside ZIP:"
+              echo "$ROOT"
+
+              cp -R "$ROOT"/. .
+            fi
           fi
-
-
-      # ============================================================
-      # 6. PREPARE WEB DIRECTORY
-      # ============================================================
 
       - name: Prepare web directory
         shell: bash
@@ -113,68 +108,50 @@ jobs:
           mkdir -p www
 
           if [ -f index.html ]; then
-            echo "Copying root web files into www/"
-
             cp index.html www/
-
-            for f in \
-              schedule.html \
-              test-analysis.html \
-              manifest.json \
-              sw.js \
-              ai-file-reader.js \
-              jee-ai-android.js \
-              jee-android-hardening.js \
-              jee-android-native.js \
-              jee-capacitor-bridge.js \
-              jee-native-files.js \
-              jee-native-storage.js \
-              jee-network-status.js \
-              jee-widgets.js \
-              icon-192.png \
-              icon-512.png
-            do
-              if [ -f "$f" ]; then
-                cp "$f" www/
-                echo "Copied: $f"
-              fi
-            done
           fi
+
+          for file in \
+            schedule.html \
+            test-analysis.html \
+            manifest.json \
+            sw.js \
+            ai-file-reader.js \
+            jee-ai-android.js \
+            jee-android-hardening.js \
+            jee-android-native.js \
+            jee-capacitor-bridge.js \
+            jee-native-files.js \
+            jee-native-storage.js \
+            jee-network-status.js \
+            jee-widgets.js \
+            icon-192.png \
+            icon-512.png
+          do
+            if [ -f "$file" ]; then
+              cp "$file" www/
+            fi
+          done
 
           test -f www/index.html
 
-          echo
-          echo "Web directory ready."
-
-          ls -lah www/
-
-
-      # ============================================================
-      # 7. CREATE PACKAGE.JSON IF REQUIRED
-      # ============================================================
+          echo "Web files ready:"
+          find www -maxdepth 1 -type f | sort
 
       - name: Prepare package.json
         shell: bash
         run: |
           set -e
 
-          if [ -f package.json ]; then
-            echo "Existing package.json found."
-            exit 0
-          fi
-
-          echo "Creating Capacitor package.json..."
-
-          cat > package.json <<'JSON'
+          if [ ! -f package.json ]; then
+            cat > package.json <<'JSON'
           {
             "name": "jee-tracker-android",
             "version": "1.0.0",
             "private": true,
-            "description": "JEE Tracker Android application",
             "scripts": {
               "android:add": "cap add android",
-              "android:sync": "cap sync android",
-              "android:build": "cd android && ./gradlew assembleDebug"
+              "android:sync": "cap sync android"
             },
             "dependencies": {
               "@capacitor/core": "^7.4.3",
@@ -192,173 +169,99 @@ jobs:
             }
           }
           JSON
+          fi
 
-          echo "package.json created."
+          test -f package.json
 
-
-      # ============================================================
-      # 8. CAPACITOR CONFIG
-      # ============================================================
-
-      - name: Prepare Capacitor configuration
+      - name: Prepare Capacitor config
         shell: bash
         run: |
           set -e
 
-          if [ -f capacitor.config.ts ]; then
-            echo "Existing capacitor.config.ts found."
-            exit 0
-          fi
-
-          cat > capacitor.config.ts <<'TS'
-          import type { CapacitorConfig } from '@capacitor/cli';
-
-          const enableNativeGoogle =
-            process.env.JEE_NATIVE_GOOGLE_AUTH === '1';
+          if [ ! -f capacitor.config.ts ]; then
+            cat > capacitor.config.ts <<'TS'
+          import type { CapacitorConfig } from "@capacitor/cli";
 
           const config: CapacitorConfig = {
-            appId: 'com.vedplayer.jeetracker',
-            appName: 'JEE Tracker',
-            webDir: 'www',
+            appId: "com.vedplayer.jeetracker",
+            appName: "JEE Tracker",
+            webDir: "www",
             bundledWebRuntime: false,
-
-            plugins: {
-              FirebaseAuthentication: {
-                skipNativeAuth: false,
-                providers: enableNativeGoogle
-                  ? ['google.com']
-                  : []
-              }
-            },
-
             server: {
-              androidScheme: 'https'
+              androidScheme: "https"
             }
           };
 
           export default config;
           TS
+          fi
 
-          echo "capacitor.config.ts created."
+          test -f capacitor.config.ts
 
-
-      # ============================================================
-      # 9. VERIFY BUILD INPUTS
-      # ============================================================
-
-      - name: Verify build inputs
+      - name: Verify required files
         shell: bash
         run: |
           set -e
 
-          echo "Checking required files..."
+          echo "Checking required project files..."
 
           test -f package.json
           test -f capacitor.config.ts
           test -f www/index.html
+          test -f www/schedule.html
+          test -f www/test-analysis.html
 
-          echo "✓ package.json"
-          echo "✓ capacitor.config.ts"
-          echo "✓ www/index.html"
-
-          echo
-          echo "Node:"
-          node --version
-
-          echo
-          echo "npm:"
-          npm --version
-
-          echo
-          echo "Java:"
-          java -version
-
-
-      # ============================================================
-      # 10. INSTALL NPM DEPENDENCIES
-      # ============================================================
+          echo "All required files found."
 
       - name: Install npm dependencies
         run: |
           npm install --no-audit --no-fund
 
-
-      # ============================================================
-      # 11. OPTIONAL FIREBASE CONFIGURATION
-      # ============================================================
-
       - name: Detect Firebase configuration
         shell: bash
         run: |
           if [ -f firebase/google-services.json ]; then
+            echo "Firebase configuration found."
             echo "JEE_NATIVE_GOOGLE_AUTH=1" >> "$GITHUB_ENV"
-            echo "✓ Firebase google-services.json found."
           else
+            echo "Firebase configuration not found."
             echo "JEE_NATIVE_GOOGLE_AUTH=0" >> "$GITHUB_ENV"
-            echo "Firebase configuration not supplied yet."
           fi
 
-
-      # ============================================================
-      # 12. CREATE ANDROID PROJECT
-      # ============================================================
-
-      - name: Add Capacitor Android
+      - name: Add Android platform
         run: |
           npx cap add android
 
-
-      # ============================================================
-      # 13. APPLY JEE TRACKER WIDGETS
-      # ============================================================
-
-      - name: Apply native widgets
+      - name: Apply JEE Tracker native widgets
         shell: bash
         run: |
           if [ -f native-android/apply-widgets.py ]; then
-            echo "Applying JEE Tracker widgets..."
             python3 native-android/apply-widgets.py
-            echo "✓ Widgets applied."
+            echo "Widgets applied."
           else
-            echo "No widget overlay found."
+            echo "Widget overlay not found."
           fi
 
-
-      # ============================================================
-      # 14. FIREBASE ANDROID CONFIG
-      # ============================================================
-
-      - name: Configure Firebase Android
+      - name: Configure Firebase
         shell: bash
         run: |
           set -e
 
           if [ ! -f firebase/google-services.json ]; then
-            echo "No Firebase configuration supplied."
-            echo "Continuing without native Google Sign-In."
+            echo "Skipping Firebase configuration."
             exit 0
           fi
 
           mkdir -p android/app
 
           cp firebase/google-services.json \
-             android/app/google-services.json
+            android/app/google-services.json
 
-          echo "✓ google-services.json copied."
-
-
-      # ============================================================
-      # 15. CAPACITOR SYNC
-      # ============================================================
+          echo "google-services.json copied."
 
       - name: Sync Capacitor
         run: |
           npx cap sync android
-
-
-      # ============================================================
-      # 16. GENERATE FIREBASE SHA-1
-      # ============================================================
 
       - name: Generate Firebase SHA-1
         shell: bash
@@ -373,13 +276,11 @@ jobs:
 
           cd ..
 
-          echo
           echo "======================================"
-          echo "FIREBASE SHA-1"
+          echo "Firebase SHA-1"
           echo "======================================"
 
-          grep -E "SHA1:|SHA-1:" \
-            signing-report.txt || true
+          grep -E "SHA1:|SHA-1:" signing-report.txt || true
 
           SHA1="$(
             grep -E "SHA1:|SHA-1:" signing-report.txt \
@@ -388,16 +289,13 @@ jobs:
           )"
 
           if [ -z "$SHA1" ]; then
-            echo
-            echo "ERROR: SHA-1 could not be extracted."
-            echo
+            echo "ERROR: SHA-1 was not generated."
             cat signing-report.txt
             exit 1
           fi
 
           echo "$SHA1" > firebase-debug-sha1.txt
 
-          echo
           echo "SHA-1:"
           echo "$SHA1"
 
@@ -407,11 +305,6 @@ jobs:
             echo "\`$SHA1\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-
-      # ============================================================
-      # 17. BUILD APK
-      # ============================================================
-
       - name: Build debug APK
         working-directory: android
         run: |
@@ -419,27 +312,12 @@ jobs:
             --no-daemon \
             --stacktrace
 
-
-      # ============================================================
-      # 18. APK SHA-256
-      # ============================================================
-
       - name: Generate APK SHA-256
         shell: bash
         run: |
-          set -e
-
           sha256sum \
             android/app/build/outputs/apk/debug/app-debug.apk \
             > app-debug.apk.sha256
-
-          echo "APK SHA-256:"
-          cat app-debug.apk.sha256
-
-
-      # ============================================================
-      # 19. UPLOAD FIREBASE SHA-1
-      # ============================================================
 
       - name: Upload Firebase SHA-1
         uses: actions/upload-artifact@v4
@@ -449,11 +327,6 @@ jobs:
             firebase-debug-sha1.txt
             signing-report.txt
           if-no-files-found: error
-
-
-      # ============================================================
-      # 20. UPLOAD APK
-      # ============================================================
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
