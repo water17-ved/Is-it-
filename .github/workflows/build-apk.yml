@@ -1,99 +1,88 @@
-name: Build JEE Tracker Android APK
+name: Build JEE Tracker Android APK + Firebase SHA-1
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: read
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Find Stage 9 ZIP
-        shell: bash
-        run: |
-          ZIP_FILE="$(find . -maxdepth 1 -type f -name 'JEE-Tracker-Android-GitHub-Ready.zip' -print -quit)"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: JEE-Tracker-Android-GitHub-Ready.zip was not found."
-            exit 1
-          fi
-
-          echo "Found: $ZIP_FILE"
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-
-      - name: Extract Android project
-        shell: bash
-        run: |
-          mkdir -p extracted-stage9
-          unzip -q "$ZIP_FILE" -d extracted-stage9
-
-          echo "Extracted files:"
-          find extracted-stage9 -maxdepth 3 -type f | head -100
-
-          cp -a extracted-stage9/. .
-
-          echo "Project root after extraction:"
-          ls -la
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      - name: Setup Java 21
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install dependencies
+        run: npm install
 
-      - name: Verify project
-        shell: bash
-        run: |
-          test -f package.json
-          test -f capacitor.config.ts
-          test -f www/index.html
-          test -f www/schedule.html
-          test -f www/test-analysis.html
-
-          echo "Project verification passed."
-
-      - name: Install npm dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Add Capacitor Android platform
+      - name: Add Android platform
         run: npx cap add android
 
       - name: Sync Capacitor
         run: npx cap sync android
 
+      - name: Generate Firebase SHA-1
+        working-directory: android
+        run: |
+          chmod +x gradlew
+
+          echo "=========================================="
+          echo "JEE TRACKER FIREBASE SHA-1"
+          echo "=========================================="
+
+          ./gradlew signingReport --no-daemon
+
+          echo ""
+          echo "=========================================="
+          echo "SHA-1 CERTIFICATE"
+          echo "=========================================="
+
+          SHA1=$(./gradlew signingReport --no-daemon 2>/dev/null \
+            | grep -m 1 "SHA1:" \
+            | sed 's/.*SHA1:[[:space:]]*//')
+
+          echo "SHA-1: $SHA1"
+          echo "SHA1=$SHA1" >> "$GITHUB_ENV"
+
+          mkdir -p ../firebase
+
+          printf '%s\n' "$SHA1" > ../firebase/firebase-debug-sha1.txt
+
+          echo ""
+          echo "SHA-1 saved to firebase/firebase-debug-sha1.txt"
+
+      - name: Upload Firebase SHA-1
+        uses: actions/upload-artifact@v4
+        with:
+          name: firebase-debug-sha1
+          path: firebase/firebase-debug-sha1.txt
+
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Generate APK checksum
-        shell: bash
         run: |
-          sha256sum \
-            android/app/build/outputs/apk/debug/app-debug.apk \
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Generate APK SHA-256
+        run: |
+          sha256sum android/app/build/outputs/apk/debug/app-debug.apk \
             > app-debug.apk.sha256
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: JEE-Tracker-debug-APK
+          name: jee-tracker-debug-apk
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
             app-debug.apk.sha256
-          if-no-files-found: error
